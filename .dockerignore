@@ -1,0 +1,12 @@
+**/node_modules
+**/.gradle
+**/build
+data
+.git
+.github
+docs
+deploy
+*.md
+android-template/local.properties
+android-template/apkcreator.properties
+android-template/app/src/main/assets/www

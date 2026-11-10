@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: apk-creator-worker
+  labels: { app: apk-creator, component: worker }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: apk-creator, component: worker }
+  template:
+    metadata:
+      labels: { app: apk-creator, component: worker }
+    spec:
+      # Let a running Gradle build finish before the pod is killed.
+      terminationGracePeriodSeconds: 600
+      securityContext: { runAsNonRoot: true, runAsUser: 1000, fsGroup: 1000 }
+      containers:
+        - name: worker
+          image: ghcr.io/your-org/apk-creator:latest
+          command: ["node", "--disable-warning=ExperimentalWarning", "server/src/worker.js"]
+          envFrom:
+            - configMapRef: { name: apk-creator-config }
+            - secretRef: { name: apk-creator-secrets }
+          env:
+            - { name: WORKER_CONCURRENCY, value: "1" }
+            - { name: GRADLE_OFFLINE, value: "true" }
+            - name: WORKER_ID
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+          resources:
+            requests: { cpu: "1", memory: 2Gi }
+            limits: { cpu: "2", memory: 3Gi }
+          volumeMounts: [{ name: builds, mountPath: /data/builds }]
+      volumes:
+        - name: builds
+          emptyDir: { sizeLimit: 5Gi }
+---
+# Scale build workers with CPU load (or swap for KEDA on the queue length).
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: apk-creator-worker
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: apk-creator-worker }
+  minReplicas: 1
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource: { name: cpu, target: { type: Utilization, averageUtilization: 60 } }

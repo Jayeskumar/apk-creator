@@ -1,0 +1,30 @@
+# On-premise, single server — the simplest way to run APK Creator.
+#
+#   docker compose up -d        then open http://<server-ip>:8080
+#
+# Everything (web UI, API, build worker, SQLite database, file storage) runs
+# in one container and persists in the ./data folder. The first account you
+# register becomes the administrator.
+services:
+  apk-creator:
+    build:
+      context: .
+      target: builder
+    image: apk-creator:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      DEPLOYMENT_MODE: onprem
+      # Set to the address phones on your network use to reach this server.
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
+      BRAND_NAME: ${BRAND_NAME:-APK Creator}
+      ALLOW_SIGNUP: ${ALLOW_SIGNUP:-true}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      EMBEDDED_WORKER: "true"
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-1}
+      # Builds use the toolchain baked into the image; no internet required.
+      GRADLE_OFFLINE: ${GRADLE_OFFLINE:-true}
+    volumes:
+      - ./data:/data

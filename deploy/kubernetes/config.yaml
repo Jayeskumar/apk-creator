@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: apk-creator-config
+data:
+  DEPLOYMENT_MODE: cloud
+  NODE_ENV: production
+  PUBLIC_URL: https://apps.example.com
+  BRAND_NAME: APK Creator
+  ALLOW_SIGNUP: "true"
+  MAX_APPS_PER_USER: "10"
+  MAX_BUILDS_PER_DAY: "20"
+  STORAGE_DRIVER: s3
+  S3_BUCKET: apk-creator-artifacts
+  S3_REGION: us-east-1
+  # S3_ENDPOINT: https://<minio-or-r2-endpoint>   # omit for AWS S3
+  TRUST_PROXY: "true"
+---
+# Example only — create real secrets with your secret manager, e.g.
+#   kubectl -n apk-creator create secret generic apk-creator-secrets \
+#     --from-literal=SECRET_KEY=$(openssl rand -hex 32) \
+#     --from-literal=DATABASE_URL=postgres://user:pass@host:5432/apkc \
+#     --from-literal=S3_ACCESS_KEY_ID=... --from-literal=S3_SECRET_ACCESS_KEY=...
+apiVersion: v1
+kind: Secret
+metadata:
+  name: apk-creator-secrets
+type: Opaque
+stringData:
+  SECRET_KEY: change-me-to-a-long-random-string
+  DATABASE_URL: postgres://apkc:apkc@postgres:5432/apkc
+  S3_ACCESS_KEY_ID: change-me
+  S3_SECRET_ACCESS_KEY: change-me

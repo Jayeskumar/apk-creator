@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="AppTheme" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:colorPrimary">@color/brand_primary</item>
+        <item name="android:colorPrimaryDark">@color/brand_primary</item>
+        <item name="android:colorAccent">@color/brand_primary</item>
+        <item name="android:statusBarColor">@color/brand_primary</item>
+        <item name="android:navigationBarColor">@color/brand_background</item>
+        <item name="android:windowBackground">@drawable/splash</item>
+        <item name="android:windowOptOutEdgeToEdgeEnforcement">true</item>
+    </style>
+</resources>

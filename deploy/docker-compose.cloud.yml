@@ -1,0 +1,85 @@
+# Scaled / cloud-style topology, runnable on one machine for staging or on a
+# Docker Swarm cluster:
+#   - api      stateless API + web UI (scale horizontally behind a load balancer)
+#   - worker   Android build workers (scale with build demand)
+#   - postgres database (use a managed service like RDS / Cloud SQL in production)
+#   - minio    S3-compatible object storage (use S3 / GCS / R2 / Azure in production)
+#
+#   cp .env.example deploy/.env   # set SECRET_KEY, PUBLIC_URL, passwords
+#   docker compose -f deploy/docker-compose.cloud.yml up -d --scale worker=3
+x-common-env: &common-env
+  DEPLOYMENT_MODE: cloud
+  NODE_ENV: production
+  SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in deploy/.env}
+  PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
+  DATABASE_URL: postgres://apkc:${POSTGRES_PASSWORD:-apkc}@postgres:5432/apkc
+  STORAGE_DRIVER: s3
+  S3_BUCKET: apk-creator
+  S3_ENDPOINT: http://minio:9000
+  S3_FORCE_PATH_STYLE: "true"
+  S3_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-apkcminio}
+  S3_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-apkcminiosecret}
+  MAX_APPS_PER_USER: ${MAX_APPS_PER_USER:-10}
+  MAX_BUILDS_PER_DAY: ${MAX_BUILDS_PER_DAY:-20}
+
+services:
+  api:
+    build: { context: .., target: server }
+    image: apk-creator-server:latest
+    restart: unless-stopped
+    environment:
+      <<: *common-env
+      EMBEDDED_WORKER: "false"
+      TRUST_PROXY: "true"
+    ports: ["8080:8080"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      createbucket: { condition: service_completed_successfully }
+
+  worker:
+    build: { context: .., target: builder }
+    image: apk-creator:latest
+    restart: unless-stopped
+    command: ["node", "--disable-warning=ExperimentalWarning", "server/src/worker.js"]
+    environment:
+      <<: *common-env
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+      GRADLE_OFFLINE: "true"
+    depends_on:
+      postgres: { condition: service_healthy }
+      createbucket: { condition: service_completed_successfully }
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: apkc
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-apkc}
+      POSTGRES_DB: apkc
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U apkc"]
+      interval: 5s
+      retries: 20
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-apkcminio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-apkcminiosecret}
+    volumes: ["miniodata:/data"]
+    ports: ["9001:9001"]
+
+  createbucket:
+    image: minio/mc:latest
+    depends_on: [minio]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-apkcminio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-apkcminiosecret}
+    entrypoint: ["/bin/sh", "-c", "until mc alias set local http://minio:9000 \"$$MINIO_ROOT_USER\" \"$$MINIO_ROOT_PASSWORD\"; do sleep 2; done; mc mb --ignore-existing local/apk-creator"]
+
+volumes:
+  pgdata:
+  miniodata:

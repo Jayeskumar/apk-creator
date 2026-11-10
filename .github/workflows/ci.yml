@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: Tests (${{ matrix.db }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        db: [sqlite, postgres]
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: apkc
+          POSTGRES_PASSWORD: apkc
+          POSTGRES_DB: apkc
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U apkc" --health-interval 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: "platforms;android-35 build-tools;35.0.0"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.14.3"
+      - run: npm ci --no-audit --no-fund
+        working-directory: server
+      - name: Run tests (includes a real APK build)
+        working-directory: server
+        run: npm test
+        env:
+          TEST_DATABASE_URL: ${{ matrix.db == 'postgres' && 'postgres://apkc:apkc@localhost:5432/apkc' || '' }}
+
+  docker:
+    name: Docker images
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: server
+          tags: apk-creator-server:ci
+          push: false
+      - name: Build all-in-one / worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: builder
+          tags: apk-creator:ci
+          push: false

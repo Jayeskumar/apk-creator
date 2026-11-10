@@ -1,0 +1,55 @@
+plugins {
+    id 'com.android.application'
+}
+
+// Values below are injected per-app by the APK Creator build worker through
+// "apkcreator.properties" in the project root. Defaults make the template
+// buildable on its own (e.g. when opened in Android Studio).
+def cfg = new Properties()
+def cfgFile = rootProject.file('apkcreator.properties')
+if (cfgFile.exists()) {
+    cfgFile.withInputStream { cfg.load(it) }
+}
+def prop = { String key, String fallback -> cfg.getProperty(key, fallback) }
+
+android {
+    namespace 'com.apkcreator.runtime'
+    compileSdk 35
+    buildToolsVersion prop('buildToolsVersion', '35.0.0')
+
+    defaultConfig {
+        applicationId prop('applicationId', 'com.apkcreator.sample')
+        minSdk 26
+        targetSdk 35
+        versionCode Integer.parseInt(prop('versionCode', '1'))
+        versionName prop('versionName', '1.0.0')
+    }
+
+    signingConfigs {
+        release {
+            if (cfg.getProperty('storeFile')) {
+                storeFile file(cfg.getProperty('storeFile'))
+                storePassword cfg.getProperty('storePassword')
+                keyAlias cfg.getProperty('keyAlias')
+                keyPassword cfg.getProperty('keyPassword')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig cfg.getProperty('storeFile') ? signingConfigs.release : signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lint {
+        checkReleaseBuilds false
+        abortOnError false
+    }
+}

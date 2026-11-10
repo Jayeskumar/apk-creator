@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: apk-creator-api
+  labels: { app: apk-creator, component: api }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: apk-creator, component: api }
+  template:
+    metadata:
+      labels: { app: apk-creator, component: api }
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 1000, fsGroup: 1000 }
+      containers:
+        - name: api
+          image: ghcr.io/your-org/apk-creator-server:latest
+          ports: [{ containerPort: 8080, name: http }]
+          envFrom:
+            - configMapRef: { name: apk-creator-config }
+            - secretRef: { name: apk-creator-secrets }
+          env:
+            - { name: EMBEDDED_WORKER, value: "false" }
+          readinessProbe:
+            httpGet: { path: /api/health, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /api/health, port: http }
+            periodSeconds: 30
+          resources:
+            requests: { cpu: 100m, memory: 192Mi }
+            limits: { cpu: "1", memory: 512Mi }
+          volumeMounts: [{ name: data, mountPath: /data }]
+      volumes: [{ name: data, emptyDir: {} }]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: apk-creator-api
+spec:
+  selector: { app: apk-creator, component: api }
+  ports: [{ port: 80, targetPort: http, name: http }]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: apk-creator
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: 20m
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [apps.example.com]
+      secretName: apk-creator-tls
+  rules:
+    - host: apps.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: { name: apk-creator-api, port: { name: http } }

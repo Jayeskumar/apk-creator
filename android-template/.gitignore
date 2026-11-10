@@ -1,0 +1,7 @@
+.gradle/
+build/
+app/build/
+local.properties
+apkcreator.properties
+app/src/main/assets/www/
+*.jks

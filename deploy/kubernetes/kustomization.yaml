@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: apk-creator
+resources:
+  - namespace.yaml
+  - config.yaml
+  - api.yaml
+  - worker.yaml
+# Point these at your registry:
+images:
+  - name: ghcr.io/your-org/apk-creator-server
+    newTag: latest
+  - name: ghcr.io/your-org/apk-creator
+    newTag: latest
