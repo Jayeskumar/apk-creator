@@ -94,8 +94,19 @@ Builds that time out, are cancelled, or whose worker disappears (stale heartbeat
 | `media` | uploaded images (owner, type, size) |
 | `leads` | form submissions from apps |
 | `custom_templates` | templates saved by admins |
+| `api_keys` | hashed personal API keys (MCP clients, scripts) |
+| `app_files` | source files of code and project apps |
 
 Schema migrations are an append-only list in `server/src/db/schema.js`, using portable SQL (TEXT/INTEGER/BIGINT, ISO timestamps).
+
+## Developer apps and the MCP server
+
+Two more app modes keep their content as source files instead of pages (`server/src/files.js`: metadata in `app_files`, content in object storage addressed by SHA-256):
+
+- **`code`**: a web app. The worker copies the files into `assets/www` instead of the shared runtime. The shell loads `https://app.local/index.html` and answers requests to that host from the bundled assets (`shouldInterceptRequest`), which gives the app a real https origin. The browser preview serves the same files from `/preview/<signed token>/…` with a `Content-Security-Policy: sandbox` header, so they run with an opaque origin.
+- **`project`**: a Gradle project. `builder/nativeProject.js` writes the files to a work directory, runs the release task with the app's keystore injected through `android.injected.signing.*` properties, locates the artifact, and falls back to `apksigner`/`jarsigner` if it came out unsigned. Gated by `PROJECT_BUILDS`.
+
+The MCP server (`server/src/mcp/`) is a stateless Streamable HTTP endpoint at `POST /mcp`. Each tool calls the server's own REST API with the caller's API key, so assistants pass through exactly the same validation, ownership checks and quotas as the web UI. `get_guide` serves the authoring reference an assistant needs. See [AI.md](AI.md).
 
 ## On-premise vs cloud
 

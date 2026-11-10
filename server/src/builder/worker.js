@@ -15,16 +15,30 @@ const crypto = require("node:crypto");
 const { spawn } = require("node:child_process");
 const { prepareProject } = require("./project");
 const { ensureKeystore } = require("./keystore");
+const native = require("./nativeProject");
+const { AppFiles } = require("../files");
 const { slug } = require("../validation");
 const security = require("../security");
 
 const MAX_LOG = 256 * 1024;
+
+/** Environment for Gradle: never hand server secrets to build scripts. */
+function buildEnvironment(cfg) {
+  const env = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (/^(SECRET_KEY|DATABASE_|ADMIN_|S3_|AWS_|TEST_|PGPASS)/.test(k)) continue;
+    env[k] = v;
+  }
+  if (cfg.build.androidHome) env.ANDROID_HOME = cfg.build.androidHome;
+  return env;
+}
 
 class BuildWorker {
   constructor({ db, storage, config, logger = console }) {
     this.db = db;
     this.storage = storage;
     this.config = config;
+    this.files = new AppFiles({ db, storage, config });
     this.logger = logger;
     this.running = 0;
     this.stopped = true;
@@ -91,8 +105,10 @@ class BuildWorker {
     let killedReason = null;
     let finished = false;
 
+    const projectPrefix = path.join(workDir, "project") + path.sep;
     const append = (text) => {
-      log += text;
+      // Show project-relative paths (app/src/...) instead of the worker's temp directory.
+      log += text.split(projectPrefix).join("");
       if (log.length > MAX_LOG) log = "…(truncated)…\n" + log.slice(-MAX_LOG);
       dirty = true;
     };
@@ -134,39 +150,59 @@ class BuildWorker {
         db: this.db, storage: this.storage, config: cfg, appId: build.app_id, appName: build.app_name, workDir, log: append,
       });
 
-      append("• Preparing Android project from template\n");
-      await prepareProject({ dir: projectDir, build, storage: this.storage, config: cfg, signing, log: append });
-
+      const mode = JSON.parse(build.config).mode;
+      const isProject = mode === "project";
       const task = build.format === "aab" ? "bundleRelease" : "assembleRelease";
-      const args = ["-p", projectDir, "--console=plain", ...(cfg.build.gradleOffline ? ["--offline"] : []), ...cfg.build.gradleArgs, task];
-      append(`• Running ${cfg.build.gradleCmd} ${args.join(" ")}\n\n`);
+      let gradleCmd = cfg.build.gradleCmd;
+      let args;
+      let printable;
+      if (isProject) {
+        append("• Preparing your Gradle project\n");
+        const prepared = await native.prepareNativeProject({ dir: projectDir, build, files: this.files, config: cfg, log: append });
+        gradleCmd = prepared.gradleCmd;
+        ({ args, printable } = native.gradleArgs({ dir: projectDir, task, signing, config: cfg }));
+      } else {
+        append(mode === "code" ? "• Packaging your web app into the Android shell\n" : "• Preparing Android project from template\n");
+        await prepareProject({ dir: projectDir, build, storage: this.storage, config: cfg, signing, files: this.files, log: append });
+        args = ["-p", projectDir, "--console=plain", ...(cfg.build.gradleOffline ? ["--offline"] : []), ...cfg.build.gradleArgs, task];
+        printable = args;
+      }
+      append(`• Running ${path.basename(gradleCmd)} ${printable.map((a) => (a === projectDir ? "<project>" : a)).join(" ")}\n\n`);
 
-      const env = { ...process.env };
-      if (cfg.build.androidHome) env.ANDROID_HOME = cfg.build.androidHome;
-
+      const timeoutSeconds = isProject ? cfg.build.projectTimeoutSeconds : cfg.build.timeoutSeconds;
       const code = await new Promise((resolve, reject) => {
-        child = spawn(cfg.build.gradleCmd, args, { cwd: projectDir, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+        child = spawn(gradleCmd, args, { cwd: projectDir, env: buildEnvironment(cfg), detached: true, stdio: ["ignore", "pipe", "pipe"] });
         child.stdout.on("data", (d) => append(d.toString()));
         child.stderr.on("data", (d) => append(d.toString()));
-        child.on("error", (e) => reject(new Error(`Could not start Gradle (${cfg.build.gradleCmd}): ${e.message}`)));
+        child.on("error", (e) => reject(new Error(`Could not start Gradle (${gradleCmd}): ${e.message}`)));
         child.on("close", resolve);
-        const timeout = setTimeout(() => job.kill("timeout"), cfg.build.timeoutSeconds * 1000);
+        const timeout = setTimeout(() => job.kill("timeout"), timeoutSeconds * 1000);
         child.on("close", () => clearTimeout(timeout));
       });
 
       if (killedReason === "canceled") throw Object.assign(new Error("Build canceled"), { canceled: true });
-      if (killedReason === "timeout") throw new Error(`Build timed out after ${cfg.build.timeoutSeconds}s`);
+      if (killedReason === "timeout") throw new Error(`Build timed out after ${timeoutSeconds}s`);
       if (killedReason) throw new Error(`Build aborted (${killedReason})`);
       if (code !== 0) throw new Error(`Gradle exited with code ${code}`);
 
-      const out = build.format === "aab"
-        ? path.join(projectDir, "app", "build", "outputs", "bundle", "release", "app-release.aab")
-        : path.join(projectDir, "app", "build", "outputs", "apk", "release", "app-release.apk");
-      if (!fs.existsSync(out)) throw new Error(`Expected output not found: ${path.relative(projectDir, out)}`);
+      let out;
+      let info = null;
+      if (isProject) {
+        out = await native.findArtifact(projectDir, build.format);
+        if (!out) throw new Error(`The build finished but produced no release .${build.format} file`);
+        out = await native.ensureSigned({ artifact: out, format: build.format, signing, config: cfg, workDir, log: append });
+        if (build.format === "apk") info = await native.readApkInfo(out, cfg);
+      } else {
+        out = build.format === "aab"
+          ? path.join(projectDir, "app", "build", "outputs", "bundle", "release", "app-release.aab")
+          : path.join(projectDir, "app", "build", "outputs", "apk", "release", "app-release.apk");
+        if (!fs.existsSync(out)) throw new Error(`Expected output not found: ${path.relative(projectDir, out)}`);
+      }
 
       const buf = await fsp.readFile(out);
       const sha256 = crypto.createHash("sha256").update(buf).digest("hex");
-      const fileName = `${slug(build.app_name, 40) || "app"}-${build.version_name}.${build.format}`;
+      const versionName = (info && /^[0-9A-Za-z._-]{1,30}$/.test(info.versionName) && info.versionName) || build.version_name;
+      const fileName = `${slug(build.app_name, 40) || "app"}-${versionName}.${build.format}`;
       const key = `builds/${build.id}/${fileName}`;
       await this.storage.putFile(key, out);
 
@@ -178,6 +214,11 @@ class BuildWorker {
         "UPDATE builds SET status = 'success', log = ?, artifact_key = ?, artifact_size = ?, sha256 = ?, finished_at = ? WHERE id = ?",
         [log, key, buf.length, sha256, security.now(), build.id]
       );
+      // Native projects define their own package name and version: record what was actually built.
+      if (info) {
+        await this.db.run("UPDATE builds SET package_name = ?, version_name = ?, version_code = ? WHERE id = ?",
+          [info.packageName, versionName, info.versionCode || build.version_code, build.id]);
+      }
     } catch (e) {
       clearInterval(ticker);
       finished = true;

@@ -82,4 +82,25 @@ module.exports = [
     created_by TEXT NOT NULL,
     created_at TEXT NOT NULL
   )`,
+  // Personal API keys (used by the MCP server and scripts). Only a hash is stored.
+  `CREATE TABLE IF NOT EXISTS api_keys (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    key_hash TEXT NOT NULL UNIQUE,
+    key_prefix TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    last_used_at TEXT
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id)`,
+  // Source files of "code" (web) and "project" (Gradle) apps. Content lives in
+  // object storage, addressed by SHA-256.
+  `CREATE TABLE IF NOT EXISTS app_files (
+    app_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    size BIGINT NOT NULL,
+    sha256 TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (app_id, path)
+  )`,
 ];

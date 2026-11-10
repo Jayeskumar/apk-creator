@@ -1,6 +1,6 @@
 # APK Creator
 
-**A no-code Android app builder for businesses.** Pick from 30 business templates, customise them in a visual editor with a live phone preview, and download a signed APK (or a Google Play–ready AAB) in about a minute.
+**A no-code Android app builder for businesses, and an APK compiler for AI-generated code.** Pick from 30 business templates and customise them in a visual editor with a live phone preview, or connect Claude through the built-in MCP server and let it write the app, compile it here and fix its own build errors. Either way you get a signed APK (or a Google Play–ready AAB).
 
 It runs **on-premise** (one Docker container, SQLite, local disk, works offline) and **in the cloud** (Postgres, S3-compatible storage, horizontally scaled build workers). It's the same code in both cases; environment variables switch between them.
 
@@ -13,9 +13,16 @@ It runs **on-premise** (one Docker container, SQLite, local disk, works offline)
 - **15 page types:** home (hero, quick actions, highlights), about, catalog/menu/services (categories, prices, badges, details), pricing plans, booking/appointments, gallery with lightbox, team, reviews, FAQ, offers & coupons, events/schedule, links, contact (hours, social, map), text, embedded web page.
 - **Orders, bookings and lead capture:** cart with checkout sent via WhatsApp, email, or the built-in **leads inbox** (with CSV export).
 - **Branding:** 12 colour presets or custom colours, dark mode, fonts, corner styles, header styles, bottom tabs or side drawer, floating WhatsApp/Call button.
-- **App icon:** pick from 48 symbols on your brand colour (adaptive icon), or upload your own logo.
+- **App icon:** pick from 51 symbols on your brand colour (adaptive icon), or upload your own logo.
 - **Live preview:** the preview runs the exact same runtime that ships inside the APK.
 - **Website to app:** wrap an existing site, with an offline screen, file uploads, downloads, and external links opened in the right app.
+
+**For developers and AI assistants**
+- **MCP server** at `/mcp` with 18 tools: an assistant can create apps, edit configuration, write source files, build, read compiler errors and return the download link. Works with Claude Code, Claude Desktop (bridge script included) and any MCP client.
+- **Compile web code:** HTML/CSS/JS written by you or an AI becomes a native app, served in-app from an `https://app.local` origin so ES modules and `fetch()` of bundled files work. In-browser code editor, ZIP import and sandboxed preview included.
+- **Compile native projects:** upload a complete Gradle project (Java/Kotlin) and get a signed APK/AAB. Failed builds return `file:line` diagnostics. Controlled by the `PROJECT_BUILDS` policy.
+- **API keys** for assistants, scripts and CI.
+- See **[docs/AI.md](docs/AI.md)**.
 
 **For the platform**
 - **Real native builds:** a clean Gradle project per build. Each app gets its **own release signing key**, so updates install over old versions and Play accepts them. You can download the keystore for backup.
@@ -51,7 +58,7 @@ Requirements: Node.js ≥ 22.5, plus JDK 17+, Gradle 8.9+ and an Android SDK (pl
 ```bash
 npm install
 ANDROID_HOME=$HOME/Android/Sdk npm run dev     # http://localhost:8080
-npm test                                       # 58 tests; includes a real APK build when ANDROID_HOME is set
+npm test                                       # 76 tests; includes real APK/AAB builds when ANDROID_HOME is set
 ```
 
 ## How it works
@@ -72,13 +79,13 @@ Details are in **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 
 | Path | What |
 |---|---|
-| `server/` | Node.js API, build worker, templates, tests |
+| `server/` | Node.js API, MCP server, build worker, templates, tests |
 | `web/` | Builder UI (vanilla JS, no build step) |
 | `runtime/` | App runtime used by the APK and by the live preview |
 | `android-template/` | Native Android shell project (Gradle) |
 | `templates/` | Optional file-based custom templates |
 | `deploy/` | Cloud docker-compose and Kubernetes manifests |
-| `docs/` | Architecture, deployment and template guides |
+| `docs/` | Architecture, deployment, template and AI/MCP guides |
 
 ## Configuration
 
@@ -94,6 +101,7 @@ All settings are environment variables. [`.env.example`](.env.example) lists the
 | `EMBEDDED_WORKER` | `true` on-prem | Run builds inside the API process |
 | `WORKER_CONCURRENCY` | `1` | Parallel builds per worker |
 | `ALLOW_SIGNUP` | `true` | Disable public sign-up after the first admin |
+| `PROJECT_BUILDS` | `admin` on-prem, `off` cloud | Who may compile uploaded Gradle projects: `off`, `admin` or `all` (see [docs/AI.md](docs/AI.md)) |
 
 Admin CLI: `npm run create-admin -- admin@example.com 'a-strong-password'`.
 
@@ -103,6 +111,8 @@ Admin CLI: `npm run create-admin -- admin@example.com 'a-strong-password'`.
 - Keystore passwords are encrypted at rest (AES-256-GCM, keyed by `SECRET_KEY`). **Back up `SECRET_KEY`.** Without it, existing signing keys can't be used, and apps can't be updated on users' phones or Google Play.
 - Uploads are type-checked by magic bytes. The preview runs in a sandboxed iframe, and all user content is escaped by the runtime.
 - Users are isolated from each other. Admins can see everything.
+- Building an uploaded Gradle project runs its build scripts on the worker. This is off in the cloud and admin-only on-premise by default (`PROJECT_BUILDS`). Server secrets are removed from the build environment.
+- API keys are stored as hashes. Code-app previews run with an opaque origin, so uploaded code cannot read a signed-in session.
 - Put the server behind HTTPS (reverse proxy or ingress) when it's exposed to the internet.
 
 ## License

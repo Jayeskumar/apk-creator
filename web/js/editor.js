@@ -4,19 +4,29 @@ import { fill, el, icon, toast, modal, confirmDialog, debounce, statusPill, time
 import { renderFields, colorInput, iconButton } from "./forms.js";
 import { PAGE_TYPES, BUSINESS_FIELDS, THEME_PRESETS } from "./schema.js";
 
-const TABS = [
-  ["design", "Design", "star"],
-  ["business", "Business", "business"],
-  ["pages", "Pages", "list"],
-  ["settings", "Settings", "wrench"],
-  ["build", "Build & download", "bolt"],
-  ["leads", "Leads", "email"],
-];
+const TABS = {
+  files: ["files", "Code", "code"],
+  design: ["design", "Design", "star"],
+  business: ["business", "Business", "business"],
+  pages: ["pages", "Pages", "list"],
+  settings: ["settings", "Settings", "wrench"],
+  build: ["build", "Build & download", "bolt"],
+  leads: ["leads", "Leads", "email"],
+};
+
+/** Which editor tabs apply to an app type. */
+function tabsFor(mode) {
+  if (mode === "code") return ["files", "design", "settings", "build", "leads"];
+  if (mode === "project") return ["files", "settings", "build"];
+  return ["design", "business", "pages", "settings", "build", "leads"];
+}
 
 export async function renderEditor(main, appId, tab) {
   const { app } = await get(`/api/apps/${appId}`);
   const cfg = app.config;
-  const state = { app, cfg, tab: TABS.some((t) => t[0] === tab) ? tab : "design", pageId: null, timers: [], disposed: false };
+  const isCode = cfg.mode === "code";
+  const isProject = cfg.mode === "project";
+  const state = { app, cfg, tab: tabsFor(cfg.mode).includes(tab) ? tab : tabsFor(cfg.mode)[0], pageId: null, timers: [], disposed: false };
 
   // ---------------------------------------------------------------- saving
   const saveStatus = el("span", { class: "save-status" }, "All changes saved");
@@ -37,7 +47,21 @@ export async function renderEditor(main, appId, tab) {
   const save = debounce(doSave, 700);
 
   // ---------------------------------------------------------------- preview
-  const iframe = el("iframe", { class: "preview-frame", title: "App preview", sandbox: "allow-scripts allow-forms", src: "/runtime/index.html" });
+  // Template apps preview through the shared runtime; code apps run their own files
+  // from a sandboxed preview URL; native projects cannot run in a browser.
+  const iframe = el("iframe", {
+    class: "preview-frame", title: "App preview",
+    sandbox: isCode ? "allow-scripts allow-forms allow-modals allow-popups" : "allow-scripts allow-forms",
+    src: isCode || isProject ? "about:blank" : "/runtime/index.html",
+  });
+  const reloadCodePreview = async () => {
+    if (!isCode) return;
+    try {
+      const { url } = await get(`/api/apps/${app.id}/preview-url`);
+      iframe.src = `${url}?t=${Date.now()}`;
+    } catch (e) { /* no index.html yet */ }
+  };
+  reloadCodePreview();
   const previewConfig = () => ({
     ...cfg,
     appId: app.id,
@@ -58,7 +82,7 @@ export async function renderEditor(main, appId, tab) {
   paintStatusBar();
   const pushPreview = debounce(() => {
     paintStatusBar();
-    if (iframe.contentWindow) iframe.contentWindow.postMessage({ type: "apkc:config", config: previewConfig(), pageId: state.pageId }, "*");
+    if (!isCode && !isProject && iframe.contentWindow) iframe.contentWindow.postMessage({ type: "apkc:config", config: previewConfig(), pageId: state.pageId }, "*");
   }, 120);
   const onMessage = (e) => {
     if (e.source === iframe.contentWindow && e.data && e.data.type === "apkc:ready") pushPreview.flush(true);
@@ -79,7 +103,7 @@ export async function renderEditor(main, appId, tab) {
     saveStatus,
     el("button", { class: "btn btn-primary", onclick: () => go("build") }, icon("bolt"), el("span", { class: "hide-sm" }, "Build APK")));
 
-  const drawTabs = () => fill(tabNav, ...TABS.map(([k, label, ic]) =>
+  const drawTabs = () => fill(tabNav, ...tabsFor(cfg.mode).map((id) => TABS[id]).map(([k, label, ic]) =>
     el("a", { href: `#/apps/${app.id}/${k}`, class: k === state.tab ? "on" : "", onclick: (e) => { e.preventDefault(); go(k); } },
       icon(ic), el("span", {}, label))));
 
@@ -94,7 +118,7 @@ export async function renderEditor(main, appId, tab) {
     state.timers.forEach(clearInterval);
     state.timers = [];
     fill(panel, );
-    const views = { design: designTab, business: businessTab, pages: pagesTab, settings: settingsTab, build: buildTab, leads: leadsTab };
+    const views = { files: filesTab, design: designTab, business: businessTab, pages: pagesTab, settings: settingsTab, build: buildTab, leads: leadsTab };
     views[state.tab]();
     panel.scrollTop = 0;
   };
@@ -105,8 +129,160 @@ export async function renderEditor(main, appId, tab) {
       tabNav,
       panel,
       el("aside", { class: "editor-preview" },
-        el("div", { class: "phone" }, el("div", { class: "phone-screen" }, statusBar, iframe)),
-        el("p", { class: "muted small center" }, "Live preview · buttons like Call open the real apps on a phone")))));
+        isProject
+          ? el("div", { class: "preview-none" }, icon("android"), el("strong", {}, "Native Android project"),
+            el("p", { class: "muted" }, "Native code can't run in the browser. Build the APK and install it on a phone or emulator to test it."))
+          : el("div", { class: "phone" }, el("div", { class: "phone-screen" }, statusBar, iframe)),
+        isProject ? null : isCode
+          ? el("p", { class: "muted small center" }, "Browser preview · saved data is temporary here, native features work in the built app · ",
+            el("a", { href: "#", onclick: (e) => { e.preventDefault(); reloadCodePreview(); } }, "Reload"))
+          : el("p", { class: "muted small center" }, "Live preview · buttons like Call open the real apps on a phone")))));
+
+  // add() would render null as text; this skips conditional sections.
+  const add = (...nodes) => panel.append(...nodes.filter(Boolean));
+
+  // ---------------------------------------------------------------- files (code / project apps)
+  function filesTab() {
+    const base = `/api/apps/${app.id}/files`;
+    const list = el("div", { class: "file-list" });
+    const editorBox = el("div", { class: "file-editor" });
+    const count = el("span", { class: "muted small" });
+    let files = [];
+    let current = null; // { path, encoding, content }
+    let dirty = false;
+    let area = null;
+
+    const saveCurrent = async () => {
+      if (!current || !dirty || current.encoding !== "utf8") return;
+      const res = await put(base, { files: [{ path: current.path, content: area.value }] });
+      current.content = area.value;
+      dirty = false;
+      drawHead();
+      toast(res.skipped.length ? "This file type is not stored" : "Saved");
+      reloadCodePreview();
+    };
+
+    const refresh = async () => {
+      files = (await get(base)).files;
+      count.textContent = `${files.length} file${files.length === 1 ? "" : "s"} · ${formatBytes(files.reduce((n, f) => n + f.size, 0))}`;
+      fill(list, files.length
+        ? files.map((f) => el("button", { type: "button", class: `file-row${current && current.path === f.path ? " on" : ""}`, title: f.path, onclick: () => open(f.path) },
+          icon(/\.(png|jpe?g|gif|webp|svg|ico)$/i.test(f.path) ? "image" : /\.(html?|xml)$/i.test(f.path) ? "web" : "text"),
+          el("span", {}, f.path), el("small", {}, formatBytes(f.size))))
+        : el("p", { class: "muted small" }, "No files yet."));
+    };
+
+    const head = el("div", { class: "file-editor-head" });
+    const drawHead = () => fill(head,
+      el("code", {}, current ? current.path : ""),
+      dirty ? el("span", { class: "pill pill-queued" }, "Unsaved") : null,
+      el("span", { class: "spacer" }),
+      current && current.encoding === "utf8" ? el("button", { class: "btn btn-small btn-primary", onclick: saveCurrent }, "Save") : null,
+      current ? el("button", { class: "btn btn-small btn-ghost danger", onclick: async () => {
+        if (!(await confirmDialog("Delete file", `Delete ${current.path}?`, { danger: true, confirm: "Delete" }))) return;
+        await del(`${base}?path=${encodeURIComponent(current.path)}`);
+        current = null; dirty = false;
+        await refresh(); drawEditor(); reloadCodePreview();
+      } }, "Delete") : null);
+
+    const drawEditor = () => {
+      if (!current) {
+        fill(editorBox, el("div", { class: "empty-state small" }, icon("code"), el("p", {}, "Select a file to view or edit it.")));
+        return;
+      }
+      drawHead();
+      if (current.encoding !== "utf8") {
+        fill(editorBox, head, el("p", { class: "note" }, `Binary file (${formatBytes(current.size)}). Upload a new version to replace it.`));
+        return;
+      }
+      area = el("textarea", { class: "code-area", spellcheck: "false", autocapitalize: "off", autocomplete: "off", wrap: "off" });
+      area.value = current.content;
+      area.addEventListener("input", () => { if (!dirty) { dirty = true; drawHead(); } });
+      area.addEventListener("keydown", (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") { e.preventDefault(); saveCurrent(); }
+        if (e.key === "Tab" && !e.shiftKey) { e.preventDefault(); area.setRangeText("  ", area.selectionStart, area.selectionEnd, "end"); area.dispatchEvent(new Event("input")); }
+      });
+      fill(editorBox, head, area);
+    };
+
+    const open = async (path) => {
+      try { await saveCurrent(); } catch (e) { toast(e.message, "error"); return; }
+      current = await get(`${base}/content?path=${encodeURIComponent(path)}`);
+      dirty = false;
+      await refresh();
+      drawEditor();
+    };
+
+    const newFile = () => {
+      const input = el("input", { placeholder: isProject ? "app/src/main/java/…/Helper.java" : "js/utils.js", spellcheck: "false" });
+      modal({
+        title: "New file",
+        body: el("div", { class: "fields" }, labeled("File path", input, "Use / for folders. Letters, digits and . _ - + @ only.")),
+        actions: [{ label: "Cancel" }, { label: "Create", primary: true, onClick: async () => {
+          const path = input.value.trim();
+          if (!path) return true;
+          await put(base, { files: [{ path, content: "" }] });
+          await open(path.replace(/^\/+/, ""));
+        } }],
+      });
+    };
+
+    const toBase64 = (file) => new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(String(r.result).split(",")[1] || "");
+      r.onerror = () => reject(new Error(`Could not read ${file.name}`));
+      r.readAsDataURL(file);
+    });
+    const fileInput = el("input", { type: "file", multiple: true, hidden: true, onchange: async (e) => {
+      const picked = [...e.target.files];
+      if (!picked.length) return;
+      try {
+        const payload = [];
+        for (const f of picked) payload.push({ path: f.name.replace(/[^A-Za-z0-9._@+-]/g, "_"), content: await toBase64(f), encoding: "base64" });
+        const res = await put(base, { files: payload });
+        toast(`${res.written.length} file(s) uploaded`);
+        await refresh(); reloadCodePreview();
+      } catch (err) { toast(err.message, "error"); }
+      e.target.value = "";
+    } });
+    const zipInput = el("input", { type: "file", accept: ".zip,application/zip", hidden: true, onchange: async (e) => {
+      const f = e.target.files[0];
+      if (!f) return;
+      if (await confirmDialog("Import ZIP", "Replace all current files with the contents of this archive?", { confirm: "Replace files" })) {
+        try {
+          const res = await upload(`${base}/zip`, f);
+          toast(`${res.written.length} file(s) imported`);
+          current = null; dirty = false;
+          await refresh(); drawEditor(); reloadCodePreview();
+        } catch (err) { toast(err.message, "error"); }
+      }
+      e.target.value = "";
+    } });
+
+    add(
+      el("div", { class: "card ai-hint" }, icon("sparkle"),
+        el("div", {}, el("strong", {}, isProject ? "Compile AI-generated Android code" : "Let an AI assistant write this app"),
+          el("p", { class: "muted" }, isProject
+            ? "Connect Claude (or any MCP client) and it can upload the project, build it here, read compiler errors and fix them — or upload a ZIP exported from your AI tool or Android Studio."
+            : "Connect Claude (or any MCP client) and describe the app you want — it writes these files, builds the APK and hands you the download link. You can also paste or upload generated code here.")),
+        el("a", { class: "btn btn-small", href: "#/ai" }, "Connect an assistant")),
+      el("div", { class: "card" },
+        el("div", { class: "card-head" },
+          el("div", {}, el("h2", {}, isProject ? "Project files" : "App files"), count),
+          el("div", { class: "row-actions" },
+            el("button", { class: "btn btn-small", onclick: newFile }, icon("plus"), "New file"),
+            el("button", { class: "btn btn-small", onclick: () => fileInput.click() }, "Upload files"),
+            el("button", { class: "btn btn-small", onclick: () => zipInput.click() }, "Import ZIP"))),
+        el("p", { class: "muted small" }, isProject
+          ? "A Gradle project: settings.gradle at the top level and an application module. Release signing is added automatically — don't include keystores."
+          : "index.html at the top level is the start page. Use relative links to your CSS, JavaScript and images."),
+        el("div", { class: "files-layout" }, list, editorBox),
+        fileInput, zipInput));
+    refresh().then(() => {
+      const first = files.find((f) => f.path === "index.html") || files.find((f) => /MainActivity\.(java|kt)$/.test(f.path)) || files[0];
+      if (first) open(first.path); else drawEditor();
+    });
+  }
 
   // ---------------------------------------------------------------- design
   function designTab() {
@@ -155,14 +331,17 @@ export async function renderEditor(main, appId, tab) {
       } catch (err) { toast(err.message, "error"); }
     } });
 
-    panel.append(
-      section("Colour theme", "Pick a preset or fine-tune your brand colours.",
-        presetGrid,
-        el("div", { class: "row2" },
-          labeled("Primary colour", colorInput(t.primary || "#1E63E9", (v) => { t.primary = v; changed(); })),
-          labeled("Accent colour", colorInput(t.secondary || t.primary || "#1E63E9", (v) => { t.secondary = v; changed(); }))),
-        renderFields(themeFields, t, { onChange: changed })),
-      section("Layout", "", renderFields(navField, cfg, { onChange: changed })),
+    add(
+      isCode
+        ? section("Brand colour", "Used for the splash screen and the Android status bar. Everything else is defined by your own CSS.",
+          labeled("Primary colour", colorInput(t.primary || "#1E63E9", (v) => { t.primary = v; changed(); })))
+        : section("Colour theme", "Pick a preset or fine-tune your brand colours.",
+          presetGrid,
+          el("div", { class: "row2" },
+            labeled("Primary colour", colorInput(t.primary || "#1E63E9", (v) => { t.primary = v; changed(); })),
+            labeled("Accent colour", colorInput(t.secondary || t.primary || "#1E63E9", (v) => { t.secondary = v; changed(); }))),
+          renderFields(themeFields, t, { onChange: changed })),
+      isCode ? null : section("Layout", "", renderFields(navField, cfg, { onChange: changed })),
       section("App icon", "Shown on the phone's home screen. Use a symbol on your brand colour, or upload a 512×512 PNG logo.",
         el("div", { class: "icon-editor" },
           iconPreview,
@@ -187,14 +366,14 @@ export async function renderEditor(main, appId, tab) {
   // ---------------------------------------------------------------- business
   function businessTab() {
     cfg.business = cfg.business || {};
-    panel.append(section("Business details", "Used across the app: home screen, contact page, quick actions, orders and bookings.",
+    add(section("Business details", "Used across the app: home screen, contact page, quick actions, orders and bookings.",
       renderFields(BUSINESS_FIELDS, cfg.business, { onChange: changed })));
   }
 
   // ---------------------------------------------------------------- pages
   function pagesTab() {
     if (cfg.mode === "website") {
-      panel.append(section("Website app", "This app shows your website. Switch to a native app in Settings to add pages.",
+      add(section("Website app", "This app shows your website. Switch to a native app in Settings to add pages.",
         el("button", { class: "btn", onclick: () => go("settings") }, "Open settings")));
       return;
     }
@@ -263,7 +442,7 @@ export async function renderEditor(main, appId, tab) {
     };
     drawList();
     drawEditor();
-    panel.append(el("div", { class: "pages-layout" }, el("div", { class: "card page-list-card" }, el("h2", {}, "Pages"), list), el("div", { class: "card" }, editor)));
+    add(el("div", { class: "pages-layout" }, el("div", { class: "card page-list-card" }, el("h2", {}, "Pages"), list), el("div", { class: "card" }, editor)));
   }
 
   // ---------------------------------------------------------------- settings
@@ -313,14 +492,15 @@ export async function renderEditor(main, appId, tab) {
       } catch (err) { toast(err.message, "error"); }
     } });
 
-    panel.append(
+    add(
       section("App identity", "",
         labeled("App name (shown under the icon)", name),
         labeled("Package name (unique app ID)", pkg, "Like com.yourcompany.app. Don't change it after publishing — phones and Google Play treat it as a different app."),
         labeled("Version", ver, "Shown to users. The internal version code increases automatically with every build."),
         el("button", { class: "btn btn-primary", onclick: () => saveMeta() }, "Save")),
-      section("App type", "", labeled("Type", mode), urlField),
-      section("Sharing", "", renderFields([{ k: "features.shareText", l: "Share message", t: "textarea", rows: 2, ph: "Text used by the “Share this app” button" }], cfg, { onChange: changed })),
+      isProject ? el("p", { class: "note" }, "For native projects the package name and version are defined in your Gradle files (applicationId, versionName). The values above are labels in this dashboard.") : null,
+      isCode || isProject ? null : section("App type", "", labeled("Type", mode), urlField),
+      isCode || isProject ? null : section("Sharing", "", renderFields([{ k: "features.shareText", l: "Share message", t: "textarea", rows: 2, ph: "Text used by the “Share this app” button" }], cfg, { onChange: changed })),
       section("Backup & reuse", "",
         el("div", { class: "row-actions" },
           el("button", { class: "btn", onclick: () => {
@@ -367,7 +547,11 @@ export async function renderEditor(main, appId, tab) {
     const historyBox = el("div");
     const keyBox = el("div");
     const nextInfo = el("p", { class: "muted small" });
-    const drawNext = () => { nextInfo.textContent = `Next build: version ${app.versionName} · code ${app.versionCode + 1} · ${app.packageName}`; };
+    const drawNext = () => {
+      nextInfo.textContent = isProject
+        ? "Package name and version come from your project's Gradle files. Signing with this app's key is added automatically."
+        : `Next build: version ${app.versionName} · code ${app.versionCode + 1} · ${app.packageName}`;
+    };
     drawNext();
 
     const startBuild = async (format) => {
@@ -472,8 +656,10 @@ export async function renderEditor(main, appId, tab) {
       }
     };
 
-    panel.append(
-      section("Build your app", "Builds are compiled from a clean Android project and signed with this app's own key.",
+    add(
+      section("Build your app", isProject
+        ? "Your Gradle project is compiled as-is. If the build fails, the log below shows the compiler errors."
+        : "Builds are compiled from a clean Android project and signed with this app's own key.",
         el("div", { class: "build-options" },
           el("button", { class: "build-option", onclick: () => startBuild("apk") },
             icon("phone"), el("strong", {}, "APK"), el("span", {}, "Install directly on phones, share via link or WhatsApp, distribute on any store.")),
@@ -490,7 +676,7 @@ export async function renderEditor(main, appId, tab) {
   // ---------------------------------------------------------------- leads
   async function leadsTab() {
     const box = el("div", {}, el("p", { class: "muted" }, "Loading…"));
-    panel.append(section("Leads inbox", "Messages, booking requests and orders sent from your app when a form is set to “Dashboard inbox”.",
+    add(section("Leads inbox", "Messages, booking requests and orders sent from your app when a form is set to “Dashboard inbox”.",
       el("div", { class: "row-actions" },
         el("button", { class: "btn btn-small", onclick: () => downloadAuthed(`/api/apps/${app.id}/leads.csv`, `leads-${app.packageName}.csv`) }, "Export CSV"),
         el("button", { class: "btn btn-small btn-ghost", onclick: async () => { await post(`/api/apps/${app.id}/leads/read`); load(); } }, "Mark all as read")),

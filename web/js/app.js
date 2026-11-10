@@ -1,6 +1,6 @@
 // Builder SPA: routing, shell, auth, dashboard, template gallery, admin.
 import { session, get, post, put, patch, del } from "./api.js";
-import { fill, el, icon, toast, modal, timeAgo, statusPill, appIcon, formatBytes, confirmDialog } from "./ui.js";
+import { fill, el, icon, toast, modal, timeAgo, statusPill, appIcon, formatBytes, confirmDialog, copyText } from "./ui.js";
 import { renderEditor } from "./editor.js";
 
 const root = document.getElementById("root");
@@ -13,7 +13,8 @@ const routes = [
   [/^\/register$/, () => authView("register")],
   [/^\/$|^\/apps$/, () => shell("apps", dashboardView)],
   [/^\/templates$/, () => shell("templates", templatesView)],
-  [/^\/apps\/([^/]+)(?:\/([a-z]+))?$/, (m) => shell("apps", (main) => renderEditor(main, m[1], m[2] || "design"), { full: true })],
+  [/^\/apps\/([^/]+)(?:\/([a-z]+))?$/, (m) => shell("apps", (main) => renderEditor(main, m[1], m[2]), { full: true })],
+  [/^\/ai$/, () => shell("ai", aiView)],
   [/^\/admin$/, () => shell("admin", adminView)],
   [/^\/account$/, () => shell("account", accountView)],
 ];
@@ -53,6 +54,7 @@ function shell(active, render, { full = false } = {}) {
   const nav = [
     ["apps", "#/apps", "list", "My apps"],
     ["templates", "#/templates", "image", "Templates"],
+    ["ai", "#/ai", "sparkle", "AI & API"],
     u.role === "admin" ? ["admin", "#/admin", "shield", "Admin"] : null,
   ].filter(Boolean);
   const main = el("main", { class: `main${full ? " main-full" : ""}` });
@@ -175,17 +177,23 @@ function templateCard(t) {
   const phone = el("div", { class: "tpl-phone", style: { "--tp": t.primary || "#1E63E9", "--ts": t.secondary || t.primary || "#1E63E9" } },
     el("div", { class: "tpl-bar" }),
     el("div", { class: "tpl-hero" }, icon(t.icon)),
-    t.mode === "website"
-      ? el("div", { class: "tpl-web" }, icon("web"), el("span", {}, "Your website"))
-      : el("div", { class: "tpl-rows" }, t.pages.slice(1, 5).map((p) => el("div", { class: "tpl-row" }, icon(p.icon || "star"), el("span", {}, p.title)))),
-    t.mode === "website" ? null : el("div", { class: "tpl-nav" }, t.pages.slice(0, 5).map((p) => icon(p.icon || "star"))));
-  return el("button", { class: "tpl-card", onclick: () => createFromTemplate(t) },
+    t.mode === "website" ? el("div", { class: "tpl-web" }, icon("web"), el("span", {}, "Your website"))
+      : t.mode === "code" ? el("div", { class: "tpl-web" }, icon("code"), el("span", {}, "index.html · CSS · JS"))
+        : t.mode === "project" ? el("div", { class: "tpl-web" }, icon("android"), el("span", {}, "Java / Kotlin · Gradle"))
+          : el("div", { class: "tpl-rows" }, t.pages.slice(1, 5).map((p) => el("div", { class: "tpl-row" }, icon(p.icon || "star"), el("span", {}, p.title)))),
+    t.mode !== "app" ? null : el("div", { class: "tpl-nav" }, t.pages.slice(0, 5).map((p) => icon(p.icon || "star"))));
+  const policy = (session.system || {}).projectBuilds;
+  const blocked = t.mode === "project" && (policy === "off" || (policy === "admin" && session.user.role !== "admin"));
+  return el("button", { class: `tpl-card${blocked ? " disabled" : ""}`, onclick: () => (blocked
+    ? toast("Native project builds are not enabled for your account on this server", "error")
+    : createFromTemplate(t)) },
     phone,
     el("div", { class: "tpl-info" },
       el("div", { class: "tpl-title" }, el("h3", {}, t.name), t.builtin ? null : el("span", { class: "pill" }, "Custom")),
       el("span", { class: "tpl-cat" }, t.category),
       el("p", {}, t.description),
-      t.mode === "website" ? null : el("span", { class: "muted small" }, `${t.pageCount} pages`)));
+      t.mode !== "app" ? null : el("span", { class: "muted small" }, `${t.pageCount} pages`),
+      blocked ? el("span", { class: "pill" }, policy === "off" ? "Disabled on this server" : "Administrators only") : null));
 }
 
 function createFromTemplate(t) {
@@ -202,11 +210,102 @@ function createFromTemplate(t) {
       { label: "Create app", primary: true, onClick: async () => {
         if (!name.value.trim()) { toast("Please enter a name", "error"); return true; }
         const { app } = await post("/api/apps", { templateId: t.id, name: name.value.trim(), websiteUrl: url.value.trim() || undefined });
-        location.hash = `#/apps/${app.id}/${t.mode === "website" ? "settings" : "design"}`;
+        location.hash = `#/apps/${app.id}/${{ website: "settings", code: "files", project: "files" }[t.mode] || "design"}`;
       } },
     ],
   });
   name.addEventListener("keydown", (e) => e.key === "Enter" && e.target.closest(".modal").querySelector(".btn-primary").click());
+}
+
+// ------------------------------------------------------------------ AI & API
+
+async function aiView(main) {
+  const mcpUrl = `${location.origin}/mcp`;
+  let freshKey = null;
+
+  const codeBlock = (text) => el("div", { class: "codeblock" },
+    el("pre", {}, text),
+    el("button", { class: "btn btn-small", onclick: () => copyText(text) }, "Copy"));
+  const keyOr = () => freshKey || "apkc_YOUR_API_KEY";
+
+  const keysBox = el("div");
+  const setup = el("div");
+
+  const drawSetup = () => fill(setup,
+    el("h3", {}, "Claude Code"),
+    el("p", { class: "muted" }, "Run once in a terminal, then ask Claude to build an app."),
+    codeBlock(`claude mcp add --transport http apk-creator ${mcpUrl} --header "Authorization: Bearer ${keyOr()}"`),
+    el("h3", {}, "Claude Desktop and other apps that start a local command"),
+    el("p", { class: "muted" }, "Download the bridge script (needs Node.js 18+), then add this to the app's MCP configuration ",
+      el("code", {}, "claude_desktop_config.json"), "."),
+    el("p", {}, el("a", { class: "btn btn-small", href: "/mcp-stdio.js", download: "apk-creator-mcp.js" }, "Download apk-creator-mcp.js")),
+    codeBlock(JSON.stringify({ mcpServers: { "apk-creator": { command: "node", args: ["/path/to/apk-creator-mcp.js"], env: { APK_CREATOR_URL: location.origin, APK_CREATOR_API_KEY: keyOr() } } } }, null, 2)),
+    el("h3", {}, "Any other MCP client or agent framework"),
+    el("p", { class: "muted" }, "Streamable HTTP endpoint with a bearer token:"),
+    codeBlock(`URL:     ${mcpUrl}\nHeader:  Authorization: Bearer ${keyOr()}`),
+    location.hostname === "localhost" || /^(10\.|192\.168\.|127\.)/.test(location.hostname)
+      ? el("p", { class: "note" }, "This server is on a private address, so only assistants running on your network (Claude Code, Claude Desktop) can reach it. Hosted assistants need a public HTTPS address.")
+      : null);
+
+  const loadKeys = async () => {
+    const { keys } = await get("/api/keys");
+    fill(keysBox,
+      freshKey ? el("div", { class: "download-panel" },
+        el("strong", {}, "Your new API key — copy it now, it won't be shown again"),
+        codeBlock(freshKey)) : null,
+      keys.length ? el("div", { class: "table-wrap" }, el("table", { class: "table" },
+        el("thead", {}, el("tr", {}, ["Name", "Key", "Created", "Last used", ""].map((h) => el("th", {}, h)))),
+        el("tbody", {}, keys.map((k) => el("tr", {},
+          el("td", {}, el("strong", {}, k.name)),
+          el("td", {}, el("code", {}, `${k.prefix}…`)),
+          el("td", {}, timeAgo(k.createdAt)),
+          el("td", {}, k.lastUsedAt ? timeAgo(k.lastUsedAt) : "never"),
+          el("td", { class: "right" }, el("button", { class: "btn btn-small btn-ghost danger", onclick: async () => {
+            if (!(await confirmDialog("Revoke key", `Revoke "${k.name}"? Assistants using it lose access immediately.`, { danger: true, confirm: "Revoke" }))) return;
+            await del(`/api/keys/${k.id}`); loadKeys();
+          } }, "Revoke")))))))
+        : el("p", { class: "muted" }, "No API keys yet."));
+  };
+
+  const createKey = () => {
+    const name = el("input", { placeholder: "e.g. Claude Code on my laptop", maxlength: 60 });
+    modal({
+      title: "Create API key",
+      body: el("div", { class: "fields" }, el("label", { class: "field" }, el("span", { class: "field-label" }, "Name"), name),
+        el("p", { class: "muted small" }, "The key acts as you: it can create, edit and build your apps. Revoke it any time.")),
+      actions: [{ label: "Cancel" }, { label: "Create key", primary: true, onClick: async () => {
+        if (!name.value.trim()) { toast("Give the key a name", "error"); return true; }
+        freshKey = (await post("/api/keys", { name: name.value.trim() })).key;
+        await loadKeys(); drawSetup();
+      } }],
+    });
+  };
+
+  const projectNote = { off: "disabled on this server", admin: "administrators only on this server", all: "enabled" }[(session.system || {}).projectBuilds] || "";
+  main.append(
+    el("div", { class: "page-head" }, el("div", {}, el("h1", {}, "AI & API"),
+      el("p", { class: "muted" }, "Let Claude or another AI assistant create, code and compile Android apps on this server."))),
+    el("div", { class: "ai-modes" }, [
+      ["image", "Business apps from a prompt", "“Make an app for my bakery with a menu, WhatsApp ordering and opening hours.” The assistant picks a template and fills in pages, colours and details."],
+      ["code", "Compile AI-written web apps", "The assistant writes HTML, CSS and JavaScript, uploads it, and gets back a signed APK — calculators, games, trackers, dashboards."],
+      ["android", `Compile native Android projects (${projectNote})`, "The assistant uploads a Gradle project in Java or Kotlin, reads the compiler errors from failed builds, fixes them and rebuilds."],
+    ].map(([ic, t, d]) => el("div", { class: "card ai-mode" }, icon(ic), el("strong", {}, t), el("p", { class: "muted" }, d)))),
+    el("div", { class: "card" },
+      el("div", { class: "card-head" }, el("div", {}, el("h2", {}, "1 · Create an API key"), el("p", { class: "muted" }, "Assistants sign in with a personal key instead of your password.")),
+        el("button", { class: "btn btn-primary btn-small", onclick: createKey }, icon("plus"), "Create key")),
+      keysBox),
+    el("div", { class: "card" }, el("h2", {}, "2 · Connect your assistant"),
+      el("p", { class: "muted" }, "This server speaks the Model Context Protocol (MCP), the open standard AI assistants use for tools."), setup),
+    el("div", { class: "card" }, el("h2", {}, "3 · Ask for an app"),
+      el("ul", { class: "prompt-list" }, [
+        "Create a restaurant app called “Rosa's Pizzeria” with our menu, table booking and a WhatsApp order button, then build the APK.",
+        "Write a tip calculator web app with a dark theme and package it as an Android app. Give me the download link.",
+        "Here's my Android project — compile it, fix any build errors, and produce a signed AAB for Google Play.",
+        "Change the primary colour of my salon app to teal and rebuild it.",
+      ].map((p) => el("li", {}, p))),
+      el("p", { class: "muted small" }, "18 tools are available to the assistant: templates, app settings, source files, builds with error extraction, preview links and leads.")));
+  await loadKeys();
+  drawSetup();
 }
 
 // ------------------------------------------------------------------ admin

@@ -4,8 +4,8 @@ APK Creator ships as two Docker image targets built from the same `Dockerfile`:
 
 | Target | Contents | Use for |
 |---|---|---|
-| `builder` (default) | Node.js app + JDK 17 + Android SDK 35 + Gradle 8.14 with a pre-warmed offline cache (~2 GB) | all-in-one on-premise server, build workers |
-| `server` | Node.js app only (~250 MB) | stateless API/web replicas in the cloud |
+| `builder` (default) | Node.js app + JDK 17 + Android SDK 35 + Gradle 8.14 with a pre-warmed offline cache (~2.6 GB) | all-in-one on-premise server, build workers |
+| `server` | Node.js app only (~360 MB) | stateless API/web replicas in the cloud |
 
 ```bash
 docker build --target builder -t apk-creator .
@@ -55,7 +55,7 @@ Run it under systemd or another process manager, and put nginx or Caddy in front
 server {
   listen 443 ssl;
   server_name apps.example.com;
-  client_max_body_size 20m;
+  client_max_body_size 80m;
   location / {
     proxy_pass http://127.0.0.1:8080;
     proxy_set_header Host $host;
@@ -122,6 +122,14 @@ For queue-based autoscaling, use KEDA with a PostgreSQL scaler on `SELECT COUNT(
 | Others | any PostgreSQL ≥ 12 | Cloudflare R2, Backblaze B2, Wasabi, MinIO | `S3_FORCE_PATH_STYLE=true` for MinIO |
 
 Set `DATABASE_SSL=true` for managed databases that require TLS.
+
+---
+
+## AI assistants and native project builds
+
+The MCP endpoint (`/mcp`) is served by the API process, so it needs no extra deployment: users create an API key on the **AI & API** page and connect their assistant ([AI.md](AI.md)). Make sure your reverse proxy allows request bodies of a few megabytes on `/mcp` and `/api/apps/*/files`, because assistants upload source files there (`client_max_body_size 80m` covers the default limits).
+
+`PROJECT_BUILDS` decides who may compile uploaded Gradle projects, whose build scripts run on the worker: `admin` by default on-premise, `off` in the cloud. If you enable it for all users, keep workers in their own containers (as in the cloud layouts above) and give those containers nothing beyond the database and storage credentials they need. Projects that use Kotlin, AndroidX or other libraries need the worker to reach `dl.google.com`, `maven.google.com` and `repo.maven.apache.org`.
 
 ---
 

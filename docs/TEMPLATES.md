@@ -2,7 +2,7 @@
 
 There are three ways to add templates to the gallery.
 
-1. **Built-in** templates live in `server/src/templates/builtin.js` (30 included). They're written with small helper functions, so a new one is usually 30–60 lines.
+1. **Built-in** templates live in `server/src/templates/builtin.js` (30 business templates plus two developer starters). They're written with small helper functions, so a new one is usually 30–60 lines.
 2. **File templates** are JSON files in `templates/`, or in the folder named by `TEMPLATES_DIR`. They're loaded at start-up, which makes them good for shipping an industry pack with an on-premise install. See `templates/example-bakery.json`.
 3. **Saved templates:** an administrator opens any app, goes to **Settings → Save as template**, and it appears in the gallery for every user on that installation. Admins can delete these in **Admin → Custom templates**.
 

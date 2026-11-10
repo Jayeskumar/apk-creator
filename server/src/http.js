@@ -1,6 +1,7 @@
 "use strict";
 
 /* Shared HTTP helpers: auth middleware, upload handling, error types. */
+const crypto = require("node:crypto");
 const multer = require("multer");
 const security = require("./security");
 
@@ -27,17 +28,55 @@ function publicUser(u) {
   return { id: u.id, email: u.email, name: u.name, role: u.role, disabled: !!u.disabled, createdAt: u.created_at };
 }
 
+const API_KEY_PREFIX = "apkc_";
+
+function hashApiKey(key) {
+  return crypto.createHash("sha256").update(key).digest("hex");
+}
+
+/** Resolves a personal API key (used by MCP clients and scripts) to its user. */
+async function userFromApiKey(ctx, key) {
+  const row = await ctx.db.get("SELECT * FROM api_keys WHERE key_hash = ?", [hashApiKey(key)]);
+  if (!row) return null;
+  const user = await ctx.db.get("SELECT * FROM users WHERE id = ?", [row.user_id]);
+  if (!user || user.disabled) return null;
+  if (!row.last_used_at || Date.now() - new Date(row.last_used_at).getTime() > 60000) {
+    await ctx.db.run("UPDATE api_keys SET last_used_at = ? WHERE id = ?", [security.now(), row.id]);
+  }
+  return user;
+}
+
 function authenticate(ctx) {
   return async (req, res, next) => {
     const header = req.get("authorization") || "";
-    const token = header.startsWith("Bearer ") ? header.slice(7) : null;
+    const token = header.startsWith("Bearer ") ? header.slice(7).trim() : null;
+    if (token && token.startsWith(API_KEY_PREFIX)) {
+      const user = await userFromApiKey(ctx, token);
+      if (!user) return next(new HttpError(401, "Invalid or revoked API key"));
+      req.user = user;
+      req.authKind = "apikey";
+      return next();
+    }
     const payload = token && security.verify(ctx.config.secretKey, token);
     if (!payload || payload.t !== "session") return next(new HttpError(401, "Please sign in"));
     const user = await ctx.db.get("SELECT * FROM users WHERE id = ?", [payload.uid]);
     if (!user || user.disabled) return next(new HttpError(401, "Account not available"));
     req.user = user;
+    req.authKind = "session";
     next();
   };
+}
+
+/** For account-level actions (managing API keys) that an API key must not perform. */
+function requireSession(req, res, next) {
+  if (req.authKind !== "session") return next(forbidden("Sign in to the web app to do this"));
+  next();
+}
+
+/** Whether this user may create and build native Gradle projects (PROJECT_BUILDS policy). */
+function canBuildProjects(ctx, user) {
+  const policy = ctx.config.build.projectBuilds;
+  return policy === "all" || (policy === "admin" && user && user.role === "admin");
 }
 
 function requireAdmin(req, res, next) {
@@ -55,14 +94,17 @@ function sniffImage(buf) {
   return null;
 }
 
-function uploader(ctx) {
+function uploader(ctx, maxMb = ctx.config.limits.maxUploadMb) {
   return multer({
     storage: multer.memoryStorage(),
-    limits: { fileSize: ctx.config.limits.maxUploadMb * 1024 * 1024, files: 1 },
+    limits: { fileSize: maxMb * 1024 * 1024, files: 1 },
   }).single("file");
 }
 
 /** Wrap async handlers so rejections reach the error middleware (Express 5 does this too). */
 const h = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
-module.exports = { HttpError, bad, notFound, forbidden, issueToken, publicUser, authenticate, requireAdmin, sniffImage, uploader, h };
+module.exports = {
+  HttpError, bad, notFound, forbidden, issueToken, publicUser, authenticate, requireAdmin, requireSession, canBuildProjects,
+  sniffImage, uploader, h, API_KEY_PREFIX, hashApiKey,
+};

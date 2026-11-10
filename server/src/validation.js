@@ -11,6 +11,14 @@ const PAGE_TYPES = new Set([
   "offers", "events", "pricing", "links", "contact", "booking", "web",
 ]);
 
+/*
+ * app      pages rendered by the shared runtime (templates)
+ * website  wraps an existing website
+ * code     custom web app from source files (HTML/CSS/JS), e.g. AI-generated
+ * project  complete Android Gradle project from source files
+ */
+const APP_MODES = new Set(["app", "website", "code", "project"]);
+
 const JAVA_KEYWORDS = new Set(("abstract assert boolean break byte case catch char class const continue default do double else enum " +
   "extends final finally float for goto if implements import instanceof int interface long native new package private " +
   "protected public return short static strictfp super switch synchronized this throw throws transient try void volatile " +
@@ -79,7 +87,7 @@ function validateConfig(input, { maxKb = 512 } = {}) {
   const cfg = clamp(input);
 
   cfg.schemaVersion = 1;
-  cfg.mode = cfg.mode === "website" ? "website" : "app";
+  cfg.mode = APP_MODES.has(cfg.mode) ? cfg.mode : "app";
   cfg.appName = String(cfg.appName || "").trim().slice(0, 50);
   cfg.navigation = cfg.navigation === "drawer" ? "drawer" : "bottom";
 
@@ -99,6 +107,9 @@ function validateConfig(input, { maxKb = 512 } = {}) {
     if (url && !/^https?:\/\/[^\s]+$/i.test(url)) throw new ValidationError("Website URL must start with http:// or https://");
   }
 
+  // "code" (web source files) and "project" (Gradle project) apps keep their
+  // content in the app file store, not in pages.
+  if (cfg.mode === "code" || cfg.mode === "project") cfg.pages = [];
   if (!Array.isArray(cfg.pages)) cfg.pages = [];
   if (cfg.pages.length > 40) throw new ValidationError("An app can have at most 40 pages");
   const seen = new Set();
@@ -125,5 +136,5 @@ function validateVersionName(v) {
 }
 
 module.exports = {
-  ValidationError, PAGE_TYPES, isValidPackageName, suggestPackageName, validateConfig, validateVersionName, isHexColor, slug,
+  ValidationError, PAGE_TYPES, APP_MODES, isValidPackageName, suggestPackageName, validateConfig, validateVersionName, isHexColor, slug,
 };

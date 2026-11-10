@@ -30,6 +30,7 @@ for (const t of templates) {
       for (const l of (p.type === "links" ? p.items : []) || []) assert.ok(ICONS[l.icon], `${p.id}: link icon ${l.icon}`);
     }
     if (cfg.mode === "app") assert.ok(cfg.pages.length >= 3, "app templates have several pages");
-    else assert.match(cfg.website.url, /^https:\/\//);
+    else if (cfg.mode === "website") assert.match(cfg.website.url, /^https:\/\//);
+    else assert.ok(["code", "project"].includes(cfg.mode));
   });
 }

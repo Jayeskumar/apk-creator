@@ -17,13 +17,21 @@ import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
+import android.webkit.MimeTypeMap;
 import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
 import android.widget.ProgressBar;
 import android.widget.Toast;
+
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Native shell for apps produced by APK Creator.
@@ -35,19 +43,28 @@ import android.widget.Toast;
  */
 public class MainActivity extends Activity {
 
-    private static final String START_URL = "file:///android_asset/www/index.html";
     private static final String OFFLINE_URL = "file:///android_asset/www/offline.html";
+    /**
+     * Virtual origin for bundled custom web apps. Requests to it are answered
+     * from assets/www, which gives the app a real https origin: ES modules,
+     * fetch() of bundled files and secure-context APIs work like on a server.
+     */
+    private static final String APP_ORIGIN = "https://app.local/";
+    private static final String APP_HOST = "app.local";
     private static final int FILE_CHOOSER_REQUEST = 1001;
 
     private WebView webView;
     private ProgressBar progressBar;
     private ValueCallback<Uri[]> filePathCallback;
     private String lastFailedUrl;
+    /** file:///android_asset/www/index.html for template apps, https://app.local/index.html for custom code. */
+    private String startUrl;
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        startUrl = getString(R.string.start_url);
 
         FrameLayout root = new FrameLayout(this);
         root.setFitsSystemWindows(true);
@@ -75,7 +92,11 @@ public class MainActivity extends Activity {
         s.setUseWideViewPort(true);
         s.setMediaPlaybackRequiresUserGesture(false);
         s.setAllowFileAccess(true);
-        s.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
+        // Bundled apps on the https virtual origin may talk to plain-http servers
+        // (typical for on-premise installs on a LAN).
+        s.setMixedContentMode(startUrl.startsWith(APP_ORIGIN)
+                ? WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                : WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
         s.setUserAgentString(s.getUserAgentString() + " ApkCreator/1.0");
 
         webView.addJavascriptInterface(new Bridge(), "ApkBridge");
@@ -87,7 +108,7 @@ public class MainActivity extends Activity {
         if (savedInstanceState != null) {
             webView.restoreState(savedInstanceState);
         } else {
-            webView.loadUrl(START_URL);
+            webView.loadUrl(startUrl);
         }
     }
 
@@ -130,6 +151,68 @@ public class MainActivity extends Activity {
 
     private int dp(int value) {
         return Math.round(value * getResources().getDisplayMetrics().density);
+    }
+
+    private static boolean isBundled(String url) {
+        return url.startsWith("file:") || url.startsWith(APP_ORIGIN);
+    }
+
+    private static String mimeTypeFor(String path) {
+        int dot = path.lastIndexOf('.');
+        String ext = dot < 0 ? "" : path.substring(dot + 1).toLowerCase();
+        switch (ext) {
+            case "html":
+            case "htm":
+                return "text/html";
+            case "js":
+            case "mjs":
+                return "text/javascript";
+            case "css":
+                return "text/css";
+            case "json":
+            case "map":
+                return "application/json";
+            case "webmanifest":
+                return "application/manifest+json";
+            case "svg":
+                return "image/svg+xml";
+            case "wasm":
+                return "application/wasm";
+            case "woff2":
+                return "font/woff2";
+            case "woff":
+                return "font/woff";
+            default:
+                String guessed = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext);
+                return guessed != null ? guessed : "application/octet-stream";
+        }
+    }
+
+    /** Serves https://app.local/<path> from assets/www/<path>. */
+    private WebResourceResponse serveBundledFile(Uri uri) {
+        Map<String, String> headers = new HashMap<>();
+        headers.put("Access-Control-Allow-Origin", "*");
+        headers.put("Cache-Control", "no-cache");
+        String path = uri.getPath();
+        if (path == null || path.isEmpty() || path.equals("/")) {
+            path = "/index.html";
+        } else if (path.endsWith("/")) {
+            path = path + "index.html";
+        }
+        if (!path.contains("..")) {
+            try {
+                InputStream in = getAssets().open("www" + path);
+                String mime = mimeTypeFor(path);
+                boolean text = mime.startsWith("text/") || mime.contains("json") || mime.contains("svg") || mime.contains("javascript");
+                WebResourceResponse response = new WebResourceResponse(mime, text ? "UTF-8" : null, in);
+                response.setResponseHeaders(headers);
+                return response;
+            } catch (IOException ignored) {
+                // fall through to 404
+            }
+        }
+        return new WebResourceResponse("text/plain", "UTF-8", 404, "Not Found", headers,
+                new ByteArrayInputStream(new byte[0]));
     }
 
     private boolean isOnline() {
@@ -188,8 +271,17 @@ public class MainActivity extends Activity {
         }
 
         @Override
+        public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+            Uri uri = request.getUrl();
+            if ("https".equals(uri.getScheme()) && APP_HOST.equals(uri.getHost())) {
+                return serveBundledFile(uri);
+            }
+            return null;
+        }
+
+        @Override
         public void onPageStarted(WebView view, String url, Bitmap favicon) {
-            progressBar.setVisibility(url.startsWith("file:") ? View.GONE : View.VISIBLE);
+            progressBar.setVisibility(isBundled(url) ? View.GONE : View.VISIBLE);
         }
 
         @Override
@@ -199,7 +291,7 @@ public class MainActivity extends Activity {
 
         @Override
         public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
-            if (request.isForMainFrame() && !request.getUrl().toString().startsWith("file:")) {
+            if (request.isForMainFrame() && !isBundled(request.getUrl().toString())) {
                 lastFailedUrl = request.getUrl().toString();
                 view.loadUrl(OFFLINE_URL);
             }
@@ -274,7 +366,7 @@ public class MainActivity extends Activity {
                 if (lastFailedUrl != null) {
                     webView.loadUrl(lastFailedUrl);
                 } else {
-                    webView.loadUrl(START_URL);
+                    webView.loadUrl(startUrl);
                 }
             });
         }

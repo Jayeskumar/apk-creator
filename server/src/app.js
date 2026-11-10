@@ -7,6 +7,9 @@ const { ValidationError } = require("./validation");
 const { HttpError } = require("./http");
 const { TemplateRegistry } = require("./templates");
 const { buildRoutes, downloadRoutes } = require("./routes/builds");
+const { fileRoutes, previewRoutes } = require("./routes/files");
+const { mcpRoutes } = require("./mcp");
+const { AppFiles } = require("./files");
 const pkg = require("../package.json");
 
 /**
@@ -15,6 +18,7 @@ const pkg = require("../package.json");
  */
 function createApp(ctx) {
   ctx.templates = ctx.templates || new TemplateRegistry({ db: ctx.db, extraDir: ctx.config.extraTemplatesDir });
+  ctx.files = ctx.files || new AppFiles(ctx);
   const app = express();
   app.disable("x-powered-by");
   if (ctx.config.trustProxy) app.set("trust proxy", 1);
@@ -28,6 +32,12 @@ function createApp(ctx) {
 
   // Public lead capture has its own CORS + body handling, mount before JSON parser.
   app.use("/api/public", require("./routes/public")(ctx));
+
+  // Source-file uploads and MCP calls carry file contents: allow larger JSON bodies there.
+  const bigJson = express.json({ limit: `${ctx.config.limits.maxAppFilesTotalMb * 2}mb` });
+  app.use("/mcp", bigJson, mcpRoutes(ctx));
+  app.use("/api/apps/:id/files", bigJson, fileRoutes(ctx));
+  app.use("/preview", previewRoutes(ctx));
   app.use(express.json({ limit: `${ctx.config.limits.maxConfigKb + 64}kb` }));
 
   app.get("/api/health", async (req, res) => {
@@ -45,11 +55,15 @@ function createApp(ctx) {
       mode: ctx.config.mode,
       version: pkg.version,
       allowSignup: ctx.config.auth.allowSignup,
+      publicUrl: ctx.config.publicUrl,
+      // off | admin | all: who may build native Gradle projects on this server
+      projectBuilds: ctx.config.build.projectBuilds,
       limits: { maxAppsPerUser: ctx.config.limits.maxAppsPerUser, maxBuildsPerDay: ctx.config.limits.maxBuildsPerDay, maxUploadMb: ctx.config.limits.maxUploadMb },
     });
   });
 
   app.use("/api/auth", require("./routes/auth")(ctx));
+  app.use("/api/keys", require("./routes/keys")(ctx));
   app.use("/api/templates", require("./routes/templates")(ctx));
   app.use("/api", downloadRoutes(ctx));
   app.use("/api/apps", require("./routes/apps")(ctx));
@@ -58,6 +72,9 @@ function createApp(ctx) {
   app.use("/api/admin", require("./routes/admin")(ctx));
 
   app.use("/api", (req, res) => res.status(404).json({ error: "Not found" }));
+
+  // Stdio bridge for MCP clients that cannot connect over HTTP (downloadable from the AI page).
+  app.get("/mcp-stdio.js", (req, res) => res.type("text/javascript").sendFile(path.join(__dirname, "..", "bin", "mcp-stdio.js")));
 
   // Builder UI + the shared app runtime (used by the live preview).
   app.use("/runtime", express.static(ctx.config.build.runtimeDir, { maxAge: 0 }));

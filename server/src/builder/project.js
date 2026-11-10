@@ -107,7 +107,7 @@ function splashLogo(ICONS, symbol, color) {
  * @param {object} [opts.signing]    { storeFile, storePassword, keyAlias, keyPassword }
  * @param {function} [opts.log]
  */
-async function prepareProject({ dir, build, storage, config, signing, log = () => {} }) {
+async function prepareProject({ dir, build, storage, config, signing, files, log = () => {} }) {
   const b = config.build;
   await copyTemplate(b.templateDir, dir);
   const main = path.join(dir, "app", "src", "main");
@@ -116,11 +116,21 @@ async function prepareProject({ dir, build, storage, config, signing, log = () =
 
   // 1. Shared runtime + config
   await fsp.mkdir(www, { recursive: true });
-  for (const f of await fsp.readdir(b.runtimeDir)) {
-    const src = path.join(b.runtimeDir, f);
-    if ((await fsp.stat(src)).isFile()) await fsp.copyFile(src, path.join(www, f));
-  }
   const appConfig = JSON.parse(build.config);
+  const customCode = appConfig.mode === "code";
+  if (customCode) {
+    // Custom web app: the user's (or their AI assistant's) files are the app.
+    if (!files) throw new Error("File store is not available for this build");
+    await fsp.copyFile(path.join(b.runtimeDir, "offline.html"), path.join(www, "offline.html"));
+    const written = await files.materialize(build.app_id, www);
+    if (!written.some((f) => f.path === "index.html")) throw new Error("index.html not found at the top level of the app files");
+    log(`Bundled ${written.length} source file(s)\n`);
+  } else {
+    for (const f of await fsp.readdir(b.runtimeDir)) {
+      const src = path.join(b.runtimeDir, f);
+      if ((await fsp.stat(src)).isFile()) await fsp.copyFile(src, path.join(www, f));
+    }
+  }
   appConfig.appId = build.app_id;
   appConfig.appName = build.app_name;
   appConfig.leadsEndpoint = `${config.publicUrl}/api/public/leads/${build.app_id}`;
@@ -139,7 +149,7 @@ async function prepareProject({ dir, build, storage, config, signing, log = () =
     }
     log(`Bundled ${keys.length} media file(s)\n`);
   }
-  await fsp.writeFile(path.join(www, "config.js"), `window.APP_CONFIG = ${JSON.stringify(bundled)};\n`);
+  if (!customCode) await fsp.writeFile(path.join(www, "config.js"), `window.APP_CONFIG = ${JSON.stringify(bundled)};\n`);
 
   // 2. Resources: name, colours, launcher icon, splash
   const ICONS = require(path.join(b.runtimeDir, "icons.js"));
@@ -152,7 +162,8 @@ async function prepareProject({ dir, build, storage, config, signing, log = () =
   const symbol = ICONS[icon.symbol] ? icon.symbol : "star";
 
   await fsp.writeFile(path.join(res, "values", "strings.xml"),
-    `<?xml version="1.0" encoding="utf-8"?>\n<resources>\n    <string name="app_name">${androidString(build.app_name)}</string>\n</resources>\n`);
+    `<?xml version="1.0" encoding="utf-8"?>\n<resources>\n    <string name="app_name">${androidString(build.app_name)}</string>\n` +
+    `    <string name="start_url" translatable="false">${customCode ? "https://app.local/index.html" : "file:///android_asset/www/index.html"}</string>\n</resources>\n`);
   await fsp.writeFile(path.join(res, "values", "colors.xml"),
     `<?xml version="1.0" encoding="utf-8"?>\n<resources>\n    <color name="brand_primary">${primary}</color>\n    <color name="brand_background">${background}</color>\n    <color name="ic_launcher_background">${iconBg}</color>\n</resources>\n`);
   await fsp.writeFile(path.join(res, "drawable", "ic_splash_logo.xml"), splashLogo(ICONS, symbol, primary));

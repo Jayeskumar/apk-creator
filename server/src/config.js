@@ -22,6 +22,12 @@ function int(value, fallback) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function projectBuildsPolicy(value, mode) {
+  const v = String(value || "").toLowerCase();
+  if (["off", "admin", "all"].includes(v)) return v;
+  return mode === "cloud" ? "off" : "admin";
+}
+
 function load(env = process.env) {
   const mode = (env.DEPLOYMENT_MODE || "onprem").toLowerCase() === "cloud" ? "cloud" : "onprem";
   const dataDir = path.resolve(env.DATA_DIR || path.join(ROOT, "data"));
@@ -68,6 +74,9 @@ function load(env = process.env) {
       maxBuildsPerDay: int(env.MAX_BUILDS_PER_DAY, mode === "cloud" ? 20 : 0),
       maxUploadMb: int(env.MAX_UPLOAD_MB, 5),
       maxConfigKb: int(env.MAX_CONFIG_KB, 512),
+      maxAppFiles: int(env.MAX_APP_FILES, 600),
+      maxAppFileMb: int(env.MAX_APP_FILE_MB, 5),
+      maxAppFilesTotalMb: int(env.MAX_APP_FILES_TOTAL_MB, 40),
     },
 
     worker: {
@@ -89,6 +98,11 @@ function load(env = process.env) {
       keepWorkDirs: bool(env.KEEP_BUILD_DIRS, false),
       keytoolCmd: env.KEYTOOL_CMD || "keytool",
       androidHome: env.ANDROID_HOME || env.ANDROID_SDK_ROOT || "",
+      // Building user-supplied Gradle projects runs arbitrary build scripts on
+      // the worker. off = disabled, admin = administrators only, all = everyone.
+      projectBuilds: projectBuildsPolicy(env.PROJECT_BUILDS, mode),
+      projectGradleOffline: bool(env.PROJECT_GRADLE_OFFLINE, false),
+      projectTimeoutSeconds: int(env.PROJECT_BUILD_TIMEOUT_SECONDS, 1800),
     },
 
     webDir: path.resolve(env.WEB_DIR || path.join(ROOT, "web")),

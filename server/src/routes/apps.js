@@ -2,7 +2,8 @@
 
 const express = require("express");
 const security = require("../security");
-const { bad, notFound, HttpError, authenticate, sniffImage, uploader, h } = require("../http");
+const { bad, notFound, forbidden, HttpError, authenticate, canBuildProjects, sniffImage, uploader, h } = require("../http");
+const starters = require("../starters");
 const { validateConfig, isValidPackageName, suggestPackageName, validateVersionName } = require("../validation");
 const { keystoreInfo } = require("../builder/keystore");
 const { serializeBuild } = require("./builds");
@@ -68,8 +69,13 @@ module.exports = function appRoutes(ctx) {
       const n = Number((await ctx.db.get("SELECT COUNT(*) AS n FROM apps WHERE user_id = ?", [req.user.id])).n);
       if (n >= max) throw new HttpError(403, `Your plan allows up to ${max} apps`);
     }
-    const template = await ctx.templates.get(templateId || "blank");
+    // `mode` is a shortcut for the developer templates (used by the MCP server).
+    const byMode = { code: "custom-code", project: "android-project", website: "website-to-app" }[req.body.mode];
+    const template = await ctx.templates.get(byMode || templateId || "blank");
     if (!template) throw bad("Unknown template");
+    if (template.config.mode === "project" && !canBuildProjects(ctx, req.user)) {
+      throw forbidden("Native Android project builds are not enabled for your account on this server");
+    }
 
     const config = JSON.parse(JSON.stringify(template.config));
     config.appName = appName;
@@ -92,6 +98,9 @@ module.exports = function appRoutes(ctx) {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [row.id, row.user_id, row.name, row.package_name, row.template_id, row.config, row.version_code, row.version_name, row.created_at, row.updated_at]
     );
+    // Developer apps start from a small working example.
+    if (validated.mode === "code") await ctx.files.write(row.id, starters.toEntries(starters.codeStarter(appName)));
+    if (validated.mode === "project") await ctx.files.write(row.id, starters.toEntries(starters.projectStarter(appName, packageName)));
     res.status(201).json({ app: serializeApp(ctx, row) });
   }));
 
@@ -101,6 +110,13 @@ module.exports = function appRoutes(ctx) {
     const app = serializeApp(ctx, row, latest);
     app.leadsEndpoint = `${ctx.config.publicUrl}/api/public/leads/${row.id}`;
     res.json({ app });
+  }));
+
+  // Short-lived link to run a "code" app in the browser (sandboxed).
+  r.get("/:id/preview-url", h(async (req, res) => {
+    const row = await loadOwnedApp(ctx, req);
+    const token = security.sign(ctx.config.secretKey, { t: "pv", app: row.id, exp: Date.now() + 6 * 3600 * 1000 });
+    res.json({ url: `/preview/${token}/index.html`, absoluteUrl: `${ctx.config.publicUrl}/preview/${token}/index.html` });
   }));
 
   r.put("/:id", h(async (req, res) => {
@@ -125,6 +141,9 @@ module.exports = function appRoutes(ctx) {
     if (body.versionName !== undefined) updates.version_name = validateVersionName(body.versionName);
     if (body.config !== undefined) {
       const cfg = validateConfig(body.config, { maxKb: ctx.config.limits.maxConfigKb });
+      if (cfg.mode === "project" && JSON.parse(row.config).mode !== "project" && !canBuildProjects(ctx, req.user)) {
+        throw forbidden("Native Android project builds are not enabled for your account on this server");
+      }
       if (updates.name) cfg.appName = updates.name;
       updates.config = JSON.stringify(cfg);
     } else if (updates.name) {
@@ -147,6 +166,7 @@ module.exports = function appRoutes(ctx) {
     await ctx.db.run("UPDATE builds SET status = 'canceled' WHERE app_id = ? AND status IN ('queued', 'building')", [row.id]);
     await ctx.db.run("DELETE FROM builds WHERE app_id = ?", [row.id]);
     await ctx.db.run("DELETE FROM leads WHERE app_id = ?", [row.id]);
+    await ctx.files.removeAll(row.id);
     await ctx.db.run("DELETE FROM apps WHERE id = ?", [row.id]);
     res.json({ ok: true });
   }));
@@ -164,6 +184,7 @@ module.exports = function appRoutes(ctx) {
        VALUES (?, ?, ?, ?, ?, ?, ?, 0, '1.0.0', ?, ?)`,
       [id, req.user.id, name, pkg, row.template_id, JSON.stringify(cfg), row.icon_key, now, now]
     );
+    await ctx.files.copyAll(row.id, id);
     res.status(201).json({ app: serializeApp(ctx, await ctx.db.get("SELECT * FROM apps WHERE id = ?", [id])) });
   }));
 
@@ -228,6 +249,16 @@ module.exports = function appRoutes(ctx) {
     const cfg = validateConfig(JSON.parse(row.config), { maxKb: ctx.config.limits.maxConfigKb });
     if (cfg.mode === "website" && !(cfg.website && cfg.website.url)) throw bad("Enter the website address before building");
     if (cfg.mode === "app" && !cfg.pages.length) throw bad("Add at least one page before building");
+    if (cfg.mode === "code" || cfg.mode === "project") {
+      const paths = new Set((await ctx.files.list(row.id)).map((f) => f.path));
+      if (cfg.mode === "code" && !paths.has("index.html")) throw bad("A web app needs an index.html file at the top level");
+      if (cfg.mode === "project") {
+        if (!canBuildProjects(ctx, req.user)) throw forbidden("Native Android project builds are not enabled for your account on this server");
+        if (!paths.has("settings.gradle") && !paths.has("settings.gradle.kts")) {
+          throw bad("A Gradle project needs settings.gradle (or settings.gradle.kts) at the top level");
+        }
+      }
+    }
 
     const versionCode = Number(row.version_code) + 1;
     await ctx.db.run("UPDATE apps SET version_code = ? WHERE id = ?", [versionCode, row.id]);
@@ -286,3 +317,4 @@ module.exports = function appRoutes(ctx) {
 };
 
 module.exports.serializeApp = serializeApp;
+module.exports.loadOwnedApp = loadOwnedApp;
