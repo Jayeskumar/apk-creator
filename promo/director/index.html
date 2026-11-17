@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>APK Creator — promo director</title>
+<style>
+  html, body { margin: 0; background: #070b16; }
+  #stage { position: relative; width: 1920px; height: 1080px; overflow: hidden; font-family: "Inter", "Inter Display", system-ui, sans-serif; color: #fff; -webkit-font-smoothing: antialiased; }
+  .bg { position: absolute; inset: 0; background: linear-gradient(160deg, #0a1024 0%, #0d1a3c 55%, #0a1f2e 100%); }
+  .blob { position: absolute; border-radius: 50%; filter: blur(90px); opacity: .5; will-change: transform; }
+  .grid { position: absolute; inset: 0; background-image: linear-gradient(rgba(255,255,255,.035) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.035) 1px, transparent 1px); background-size: 64px 64px; -webkit-mask-image: radial-gradient(ellipse at 50% 45%, #000 25%, transparent 75%); }
+  .scene { position: absolute; inset: 0; will-change: opacity, transform; }
+  .abs { position: absolute; }
+  .kicker { font-size: 20px; font-weight: 700; letter-spacing: .18em; text-transform: uppercase; color: #5eead4; display: flex; align-items: center; gap: 12px; }
+  .kicker .num { color: #0b1020; background: #5eead4; border-radius: 8px; padding: 3px 9px; letter-spacing: .04em; }
+  .title { font-size: 62px; font-weight: 800; line-height: 1.04; letter-spacing: -.028em; }
+  .sub { font-size: 25px; line-height: 1.45; color: rgba(226, 232, 255, .78); font-weight: 450; }
+  .chips { display: flex; flex-direction: column; gap: 12px; align-items: flex-start; }
+  .chip { display: inline-flex; align-items: center; gap: 12px; padding: 11px 18px 11px 14px; border-radius: 999px; background: rgba(255,255,255,.075); border: 1px solid rgba(255,255,255,.14); font-size: 20px; font-weight: 600; white-space: nowrap; }
+  .chip svg { width: 24px; height: 24px; fill: #5eead4; }
+  .grad { background: linear-gradient(90deg, #60a5fa, #34d399); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .mark { border-radius: 26%; background: linear-gradient(135deg, #1e63e9, #00bfa5); display: flex; align-items: center; justify-content: center; box-shadow: 0 20px 60px rgba(0, 191, 165, .35), inset 0 1px 0 rgba(255,255,255,.25); }
+  .mark svg { fill: #fff; width: 58%; height: 58%; }
+
+  .browser { position: absolute; border-radius: 16px; overflow: hidden; background: #fff; box-shadow: 0 40px 100px rgba(0, 0, 0, .55), 0 0 0 1px rgba(255,255,255,.08); will-change: transform, opacity; }
+  .browser .bar { height: 44px; background: #eef1f6; display: flex; align-items: center; gap: 8px; padding: 0 16px; border-bottom: 1px solid #dfe3ea; }
+  .browser .bar i { width: 13px; height: 13px; border-radius: 50%; display: block; }
+  .browser .url { margin-left: 18px; flex: 1; max-width: 520px; height: 28px; border-radius: 8px; background: #fff; border: 1px solid #dfe3ea; color: #4a5468; font-size: 15px; display: flex; align-items: center; gap: 8px; padding: 0 12px; }
+  .browser .url svg { width: 14px; height: 14px; fill: #16a34a; }
+  .browser .vp { position: relative; overflow: hidden; background: #f4f6fa; }
+  .browser .vp img { position: absolute; left: 0; top: 0; transform-origin: 0 0; display: block; }
+
+  .phone { position: absolute; background: #0d1018; border-radius: 54px; padding: 12px; box-shadow: 0 40px 90px rgba(0, 0, 0, .55), inset 0 0 0 2px #2b303c; will-change: transform, opacity; }
+  .phone .screen { position: relative; border-radius: 42px; overflow: hidden; background: #fff; }
+  .phone .status { display: flex; align-items: center; justify-content: space-between; padding: 0 26px; font-weight: 700; font-size: 15px; position: relative; }
+  .phone .cam { position: absolute; left: 50%; top: 50%; width: 13px; height: 13px; margin: -6.5px 0 0 -6.5px; border-radius: 50%; background: #05070b; }
+  .phone img { display: block; width: 100%; }
+
+  .terminal { position: absolute; border-radius: 18px; background: #0b0f1a; border: 1px solid rgba(255,255,255,.1); box-shadow: 0 40px 100px rgba(0,0,0,.55); overflow: hidden; }
+  .terminal .tbar { height: 46px; display: flex; align-items: center; gap: 8px; padding: 0 18px; background: #121828; border-bottom: 1px solid rgba(255,255,255,.07); color: #8b95b5; font-size: 15px; }
+  .terminal .tbar i { width: 13px; height: 13px; border-radius: 50%; display: block; }
+  .terminal .tbar span { margin-left: 14px; }
+  .terminal pre { margin: 0; padding: 28px 32px; font-family: "DejaVu Sans Mono", ui-monospace, monospace; font-size: 24.5px; line-height: 1.66; color: #dbe2f0; white-space: pre-wrap; word-break: break-all; }
+  .t-dim { color: #6b7591; } .t-ok { color: #34d399; } .t-tool { color: #93c5fd; } .t-user { color: #fff; font-weight: 700; } .t-acc { color: #5eead4; } .t-warn { color: #fbbf24; }
+  .caret { display: inline-block; width: 12px; height: 26px; background: #5eead4; vertical-align: -5px; }
+
+  .card { position: absolute; border-radius: 24px; background: linear-gradient(160deg, rgba(255,255,255,.1), rgba(255,255,255,.04)); border: 1px solid rgba(255,255,255,.14); box-shadow: 0 30px 80px rgba(0,0,0,.35); padding: 38px 40px; }
+  .card h3 { margin: 18px 0 6px; font-size: 40px; letter-spacing: -.02em; }
+  .card .ic { width: 72px; height: 72px; border-radius: 20px; display: flex; align-items: center; justify-content: center; }
+  .card .ic svg { width: 40px; height: 40px; fill: #fff; }
+  .code { font-family: "DejaVu Sans Mono", monospace; font-size: 21px; background: rgba(0,0,0,.4); border: 1px solid rgba(255,255,255,.1); border-radius: 12px; padding: 12px 16px; margin: 18px 0 22px; color: #5eead4; }
+  .check { display: flex; align-items: center; gap: 14px; font-size: 23px; font-weight: 550; margin: 14px 0; }
+  .check b { width: 30px; height: 30px; border-radius: 50%; background: #34d399; display: flex; align-items: center; justify-content: center; flex: none; }
+  .check b svg { width: 20px; height: 20px; fill: #06281c; }
+
+  .toast { position: absolute; display: flex; align-items: center; gap: 16px; padding: 16px 22px 16px 16px; border-radius: 18px; background: #fff; color: #141a26; box-shadow: 0 24px 60px rgba(0,0,0,.45); font-size: 20px; }
+  .toast .ti { width: 48px; height: 48px; border-radius: 14px; display: flex; align-items: center; justify-content: center; flex: none; }
+  .toast .ti svg { width: 28px; height: 28px; fill: #fff; }
+  .toast small { display: block; color: #6b7489; font-size: 16px; margin-top: 2px; }
+  .watermark { position: absolute; right: 48px; bottom: 36px; display: flex; align-items: center; gap: 12px; font-weight: 700; font-size: 20px; color: rgba(255,255,255,.7); }
+  .ring { position: absolute; border-radius: 50%; border: 3px solid rgba(94, 234, 212, .7); }
+  .fade { position: absolute; inset: 0; background: #000; pointer-events: none; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<script src="../../runtime/icons.js"></script>
+<script src="data.js"></script>
+<script src="director.js"></script>
+</body>
+</html>
